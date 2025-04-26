@@ -8,6 +8,7 @@ src-$(CONFIG_WANT_SPI) += spicmds.c
 src-$(CONFIG_WANT_I2C) += i2ccmds.c
 src-$(CONFIG_WANT_HARD_PWM) += pwmcmds.c
 src-$(CONFIG_HAVE_GPIO_SDIO) += sdiocmds.c
+src-$(CONFIG_SERIAL_BRIDGE) += serial_bridge.c
 
 src-$(CONFIG_WANT_BUTTONS) += buttons.c
 src-$(CONFIG_WANT_TMCUART) += tmcuart.c

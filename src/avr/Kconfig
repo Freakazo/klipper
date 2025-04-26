@@ -150,3 +150,25 @@ config SIMULAVR
          If unsure, select "N".
 
 endif
+
+
+config SERIAL_BRIDGE
+    bool "Enable serial bridge" if LOW_LEVEL_OPTIONS
+    depends on MACH_atmega2560
+    default n
+
+config ENABLE_SERIAL_BRIDGE_USART0
+    bool "USART0" if SERIAL_BRIDGE && !(AVR_SERIAL_UART0)
+    depends on SERIAL_BRIDGE
+
+config ENABLE_SERIAL_BRIDGE_USART1
+    bool "USART1" if SERIAL_BRIDGE && !(AVR_SERIAL_UART1)
+    depends on SERIAL_BRIDGE
+
+config ENABLE_SERIAL_BRIDGE_USART2
+    bool "USART2" if SERIAL_BRIDGE && !(AVR_SERIAL_UART2)
+    depends on SERIAL_BRIDGE
+
+config ENABLE_SERIAL_BRIDGE_USART3
+    bool "USART3" if SERIAL_BRIDGE && !(AVR_SERIAL_UART3)
+    depends on SERIAL_BRIDGE
