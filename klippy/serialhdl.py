@@ -4,6 +4,11 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging, threading, os
+import pty
+import select
+import termios
+import tty
+
 import serial
 
 import msgproto, chelper, util
@@ -33,6 +38,7 @@ class SerialReader:
         # Sent message notification tracking
         self.last_notify_id = 0
         self.pending_notifications = {}
+
     def _bg_thread(self):
         response = self.ffi_main.new('struct pull_queue_message *')
         while 1:
@@ -43,12 +49,15 @@ class SerialReader:
             if response.notify_id:
                 params = {'#sent_time': response.sent_time,
                           '#receive_time': response.receive_time}
+                # logging.info('%sGot notified for id %s - %s', self.warn_prefix, response.notify_id, params)
                 completion = self.pending_notifications.pop(response.notify_id)
                 self.reactor.async_complete(completion, params)
                 continue
             params = self.msgparser.parse(response.msg[0:count])
             params['#sent_time'] = response.sent_time
             params['#receive_time'] = response.receive_time
+            # if params.get('#name') not in ['#output', 'analog_in_state', 'clock']:
+            #     logging.info('%sReceived response from serial %s', self.warn_prefix, params)
             hdl = (params['#name'], params.get('oid'))
             try:
                 with self.lock:
@@ -60,6 +69,7 @@ class SerialReader:
     def _error(self, msg, *params):
         raise error(self.warn_prefix + (msg % params))
     def _get_identify_data(self, eventtime):
+        logging.info('Attempting to get logging data from micro-controller..')
         # Query the "data dictionary" from the micro-controller
         identify_data = b""
         while 1:
@@ -84,11 +94,14 @@ class SerialReader:
             self.ffi_lib.serialqueue_free)
         self.background_thread = threading.Thread(target=self._bg_thread)
         self.background_thread.start()
+        logging.info('%sStarting serial session with %s', self.warn_prefix, serial_fd_type)
         # Obtain and load the data dictionary from the firmware
         completion = self.reactor.register_callback(self._get_identify_data)
-        identify_data = completion.wait(self.reactor.monotonic() + 5.)
+        identify_data = completion.wait(self.reactor.monotonic() + 50.)
         if identify_data is None:
             logging.info("%sTimeout on connect", self.warn_prefix)
+            logging.info("%s Dump Debug:\n%s", self.warn_prefix, self.dump_debug())
+
             self.disconnect()
             return False
         msgparser = msgproto.MessageParser(warn_prefix=self.warn_prefix)
@@ -170,7 +183,7 @@ class SerialReader:
                                 self.warn_prefix, e)
                 self.reactor.pause(self.reactor.monotonic() + 5.)
                 continue
-            serial_dev = os.fdopen(fd, 'rb+', 0)
+            serial_dev = os.fdopen(fd, 'wb+', 0)
             ret = self._start_session(serial_dev)
             if ret:
                 break
@@ -194,6 +207,7 @@ class SerialReader:
                 continue
             stk500v2_leave(serial_dev, self.reactor)
             ret = self._start_session(serial_dev)
+            logging.info("%sStarted serial connection", self.warn_prefix)
             if ret:
                 break
     def connect_file(self, debugoutput, dictionary, pace=False):
@@ -202,6 +216,31 @@ class SerialReader:
         self.serialqueue = self.ffi_main.gc(
             self.ffi_lib.serialqueue_alloc(self.serial_dev.fileno(), b'f', 0),
             self.ffi_lib.serialqueue_free)
+
+    def connect_serial_bridge(self, bridge_mcu, oid):
+        """Connect to a microcontroller via another microcontroller's serial port
+
+        This method sets up a connection to a target microcontroller through
+        another microcontroller (bridge_mcu) using its serial port.
+
+        Args:
+            bridge_mcu: The bridge microcontroller object
+            usart: The USART port number on the bridge MCU (default: 0)
+            baud: The baud rate for the serial connection (default: 250000)
+            u2x: Double transmission speed flag (default: 0)
+        """
+        self.bridge_mcu = bridge_mcu
+        self.bridge_oid = oid
+        # Create a SerialBridgeDevice for communication
+        self.serial_dev = SerialBridgeDevice(self.bridge_mcu, self.bridge_oid, self.get_default_command_queue())
+
+        # Start a new session with the serial bridge device
+        logging.info("%sStarting serial bridge session", self.warn_prefix)
+        ret = self._start_session(self.serial_dev)
+        if not ret:
+            self._error("Unable to start session with serial bridge")
+        logging.info('Started Serial Bridge Session')
+
     def set_clock_est(self, freq, conv_time, conv_clock, last_clock):
         self.ffi_lib.serialqueue_set_clock_est(
             self.serialqueue, freq, conv_time, conv_clock, last_clock)
@@ -214,6 +253,11 @@ class SerialReader:
         if self.serial_dev is not None:
             self.serial_dev.close()
             self.serial_dev = None
+        # Clean up bridge MCU registration if it exists
+        if hasattr(self, 'bridge_mcu') and hasattr(self, 'bridge_oid'):
+            self.bridge_mcu.register_response(None, 'serial_bridge_response', self.bridge_oid)
+            delattr(self, 'bridge_mcu')
+            delattr(self, 'bridge_oid')
         for pn in self.pending_notifications.values():
             pn.complete(None)
         self.pending_notifications.clear()
@@ -240,11 +284,26 @@ class SerialReader:
                 self.handlers[name, oid] = callback
     # Command sending
     def raw_send(self, cmd, minclock, reqclock, cmd_queue):
+        # logging.info('%sraw_send %s', self.warn_prefix, cmd)
+        # if hasattr(self, 'bridge_mcu') and hasattr(self, 'bridge_oid'):
+        #     encoded_cmd = self._encode_bridge_cmd(cmd)
+        #     self._serial_bridge_send_cmd.send([self.bridge_oid, encoded_cmd])
+        #     return
         self.ffi_lib.serialqueue_send(self.serialqueue, cmd_queue,
                                       cmd, len(cmd), minclock, reqclock, 0)
     def raw_send_wait_ack(self, cmd, minclock, reqclock, cmd_queue):
+        # if hasattr(self, 'bridge_mcu') and hasattr(self, 'bridge_oid'):
+        #     encoded_cmd = self._encode_bridge_cmd(cmd)
+        #     logging.info("%sbridged raw_send_wait_ack - oid %s, cmd %s encoded[%s]", self.warn_prefix, self.bridge_oid, cmd, encoded_cmd)
+        #     params = self._serial_bridge_send_cmd.send_wait_ack([self.bridge_oid, encoded_cmd], minclock, reqclock)
+        #     logging.info("%s - bridge got send_wait_ack response, %s", self.warn_prefix, params)
+        #     if params is None:
+        #         self._error("Serial connection closed")
+        #     return params
+
         self.last_notify_id += 1
         nid = self.last_notify_id
+        # logging.info('%s raw_send_wait_ack %s nid[%s]', self.warn_prefix, cmd, nid)
         completion = self.reactor.completion()
         self.pending_notifications[nid] = completion
         self.ffi_lib.serialqueue_send(self.serialqueue, cmd_queue,
@@ -257,9 +316,27 @@ class SerialReader:
         cmd = self.msgparser.create_command(msg)
         self.raw_send(cmd, minclock, reqclock, self.default_cmd_queue)
     def send_with_response(self, msg, response):
+        # if hasattr(self, 'bridge_mcu'):
+        #     # Maybe we have to send the bridge command.
+        #     # Bridge responses should be parse.
+        #     # Bridge responses should populate the queue and messages be pulled from it.
+        #     cmd = self.msgparser.create_command(msg)
+        #     encoded_cmd = self._encode_bridge_cmd(cmd)
+        #     bridge_send_cmd = "serial_bridge_send oid=%d data=%s" % (self.bridge_oid, encoded_cmd)
+        #     logging.info('%sBridged send_with_response cmd[%s] msg[%s enc<%s>] response: %s',self.warn_prefix, bridge_send_cmd, msg, encoded_cmd, response)
+        #     return self.bridge_mcu._serial.send_with_response(bridge_send_cmd, 'serial_bridge_response')
         cmd = self.msgparser.create_command(msg)
+        # logging.info('%ssend_with_response cmd[%s] msg[%s] for response: %s',self.warn_prefix, cmd, msg, response)
         src = SerialRetryCommand(self, response)
         return src.get_response([cmd], self.default_cmd_queue)
+
+    # def _encode_bridge_cmd(self, cmd):
+    #     raw_message = self.get_msgparser().encode_msgblock(0, cmd)
+    #     logging.info("The raw message is: %s", raw_message)
+    #     flat_list = [item for sublist in raw_message for item in (sublist if isinstance(sublist, list) else [sublist])]
+    #     encoded_cmd = bytearray(flat_list)
+    #     logging.info("The encoded message is: %s", encoded_cmd)
+    #     return bytes(encoded_cmd).hex()
     def alloc_command_queue(self):
         return self.ffi_main.gc(self.ffi_lib.serialqueue_alloc_commandqueue(),
                                 self.ffi_lib.serialqueue_free_commandqueue)
@@ -314,6 +391,7 @@ class SerialRetryCommand:
         retries = 5
         retry_delay = .010
         while 1:
+            # logging.info('Serial Retry sending: %', cmds)
             for cmd in cmds[:-1]:
                 self.serial.raw_send(cmd, minclock, reqclock, cmd_queue)
             self.serial.raw_send_wait_ack(cmds[-1], minclock, reqclock,
@@ -386,3 +464,60 @@ def arduino_reset(serialport, reactor):
     ser.dtr = False
     reactor.pause(reactor.monotonic() + 0.100)
     ser.close()
+
+
+# Serial Bridge Device class to handle communication through a bridge MCU
+class SerialBridgeDevice:
+    def __init__(self, bridge_mcu, oid, cmd_queue):
+        self.bridge_mcu = bridge_mcu
+        self.oid = oid
+        self.read_lock = threading.Lock()
+        self.write_lock = threading.Lock()
+        # Create a pipe for serialqueue to read from
+        self.master_fd, self.slave_fd = pty.openpty()
+        new_settings = termios.tcgetattr(self.master_fd)  # Does this to avoid modifying a reference that also modifies old_settings
+        new_settings[3] = new_settings[3] & ~termios.ECHO
+        termios.tcsetattr(self.master_fd, termios.TCSADRAIN, new_settings)
+        tty.setraw(self.master_fd, termios.TCSADRAIN)
+
+        self.send_cmd = bridge_mcu.lookup_command("serial_bridge_send oid=%c data=%*s", cmd_queue)
+        bridge_mcu.register_response(self._handle_serial_bridge_response, 'serial_bridge_response', self.oid)
+
+        self.master_thread = threading.Thread(target=self._listener)
+        self.master_thread.start()
+
+    def _listener(self):
+        MAX_MSG_SIZE = 64 - 8
+        while 1:
+            with self.write_lock:
+                r, w, e, = select.select([self.master_fd], [], [], 0)
+                if not r:
+                    continue
+                data = os.read(self.master_fd, MAX_MSG_SIZE)
+                if not data:
+                    return
+                # logging.info('mmu3 _listener, %s', list(bytearray(data)))
+                self.send_cmd.send([self.oid, data])
+
+    def _handle_serial_bridge_response(self, params):
+        data = params['data']
+        # logging.info('_handle_serial_bridge_response, %s', list(bytearray(data)))
+        with self.write_lock:
+            os.write(self.master_fd, bytearray(data))
+
+    def fileno(self):
+        # Return the file descriptor for serialqueue to read from
+        return self.slave_fd
+
+
+    def close(self):
+        logging.info('Closing the pipe')
+        os.close(self.slave_fd)
+        os.close(self.master_fd)
+
+#
+#
+#
+#
+#
+#

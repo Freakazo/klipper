@@ -8,6 +8,7 @@ import json, zlib, logging
 DefaultMessages = {
     "identify_response offset=%u data=%.*s": 0,
     "identify offset=%u count=%c": 1,
+    "reset": 2,
 }
 
 MESSAGE_MIN = 5
@@ -289,7 +290,7 @@ class MessageParser:
             self._error("Extra data at end of message")
         params['#name'] = mid.name
         return params
-    def encode_msgblock(self, seq, cmd):
+    def encode_msgblock(self, seq, cmd): # Unused but thank god it's here.
         msglen = MESSAGE_MIN + len(cmd)
         seq = (seq & MESSAGE_SEQ_MASK) | MESSAGE_DEST
         out = [msglen, seq] + cmd

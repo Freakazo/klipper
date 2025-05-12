@@ -14,7 +14,7 @@
 void serial_bridge_enable_tx_irq(uint8_t usart_index);
 
 // serial_bridge_irq.c
-void serial_bridge_rx_byte(uint_fast8_t data, uint8_t buffer_offset);
+void serial_bridge_rx_byte(uint8_t data, uint8_t buffer_offset);
 uint8_t serial_bridge_get_tx_byte(uint8_t *pdata, uint8_t buffer_offset); // returns 1 if no data available, otherwise 0.
 
 // serial_bridge_irq.c

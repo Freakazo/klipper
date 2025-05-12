@@ -133,6 +133,11 @@ class Printer:
                 if self.state_message is not message_startup:
                     return
                 cb()
+            self.send_event("klippy:mcu_identify_bridged")
+            for cb in self.event_handlers.get("klippy:connect_bridged", []):
+                if self.state_message is not message_startup:
+                    return
+                cb()
         except (self.config_error, pins.error) as e:
             logging.exception("Config error")
             self._set_state("%s\n%s" % (str(e), message_restart))
@@ -190,6 +195,8 @@ class Printer:
         run_result = self.run_result
         try:
             if run_result == 'firmware_restart':
+                logging.info("Restarting firmware")
+                self.send_event("klippy:bridged_firmware_restart")
                 self.send_event("klippy:firmware_restart")
             self.send_event("klippy:disconnect")
         except:

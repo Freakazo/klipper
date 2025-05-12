@@ -4,6 +4,7 @@
 
 
 #include <string.h> // memcpy
+#include <stdio.h> // sprintf
 #include "autoconf.h" // CONFIG_MACH_AVR
 #include "board/gpio.h" // gpio_out_write
 #include "board/irq.h" // irq_poll
@@ -41,7 +42,7 @@ void command_config_serial_bridge(uint32_t *args) {
     struct serial_bridge *bridge = oid_alloc(
         args[0], command_config_serial_bridge, sizeof(*bridge));
     bridge->timer.func = serial_bridge_event;
-    bridge->timer.waketime = args[1];
+    bridge->timer.waketime = timer_read_time() + args[2];
     bridge->rest_time = args[2];
     bridge->usart_number = args[3];
     bridge->baud = args[4];
@@ -56,34 +57,37 @@ DECL_COMMAND(command_config_serial_bridge,
              " rest_ticks=%u usart=%c baud=%u u2x=%c");
 
 
-void
-
-
-command_serial_bridge_send(uint32_t *args) {
+void command_serial_bridge_send(uint32_t *args) {
     struct serial_bridge *sb = oid_lookup(args[0], command_config_serial_bridge);
     uint8_t data_len = args[1];
     uint8_t *data = command_decode_ptr(args[2]);
     serial_bridge_send(data, data_len, sb->usart_number);
 }
 
-
-DECL_COMMAND(command_serial_bridge_send, "serial_bridge_send oid=%c text=%*s");
-
-
-void
+DECL_COMMAND(command_serial_bridge_send, "serial_bridge_send oid=%c data=%*s");
 
 
-serial_bridge_task(void) {
+void serial_bridge_task(void) {
     if (!sched_check_wake(&serial_bridge_wake))
         return;
-    static uint8_t buf[SERIAL_BRIDGE_RX_BUFF_SIZE];
+    uint8_t buf[SERIAL_BRIDGE_RX_BUFF_SIZE];
     uint8_t oid;
     struct serial_bridge *sb;
+
     foreach_oid(oid, sb, command_config_serial_bridge) {
-        uint32_t data_len = serial_bridge_get_data(buf, sb->usart_number);
-        if (data_len) {
-            sendf("serial_bridge_response oid=%c text=%*s",
-                  oid, (uint8_t)data_len, buf);
+        uint8_t data_len = serial_bridge_get_data(buf, sb->usart_number);
+        if (data_len > 0) {
+//            char ascii_chars[192] = {};
+//            char temp[20];
+//            for(uint8_t i = 0; i < data_len; i++ ) {
+//               sprintf(temp, "%d", buf[i]);
+//               strcat(ascii_chars, temp);
+//               if (i < data_len - 1) {
+//                   strcat(ascii_chars, ", ");
+//               }
+//            }
+//            output("bridge_resp: oid %c %c %s", oid, data_len, ascii_chars);
+            sendf("serial_bridge_response oid=%c data=%*s", oid, data_len, buf);
         }
     }
 }

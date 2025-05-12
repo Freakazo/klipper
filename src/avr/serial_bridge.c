@@ -87,6 +87,13 @@ void serial_bridge_enable_tx_irq(const uint8_t usart_number) {
     if (cfg == NULL) {
         return;
     }
+    uint8_t was_enabled = *(cfg->ucsrb) & (1 << cfg->udrie_bit);
+    uint8_t tx_enabled = *(cfg->ucsrb) & (1 << cfg->txen_bit);
+    if(was_enabled > 0 && tx_enabled > 0) {
+       output("Was enabled, just gonna leave it. USART: %c", usart_number);
+       return;
+    }
+//    output("Enabling TX interrupt for USART: %c", usart_number);
     *(cfg->ucsrb) |= (1 << cfg->udrie_bit) | (1 << cfg->txen_bit);
 }
 
@@ -113,6 +120,7 @@ int8_t serial_bridge_configure(const uint8_t usart_number, const uint32_t baud, 
     // Enable the receiver its interrupt.
     *(cfg->ucsrb) = (1 << cfg->rxen_bit) | (1 << cfg->rxcie_bit);
 
+    output("Serial bridge configured %c, baud: %u", cfg->usart_number, cfg->baud);
     return 1;
 }
 
@@ -124,7 +132,7 @@ ISR(USART##num##_RX_vect) { \
 ISR(USART##num##_UDRE_vect) { \
     uint8_t data; \
     int no_data_available = serial_bridge_get_tx_byte(&data, USART##num##_OFFSET); \
-    if (no_data_available) { \
+    if (no_data_available == 1) { \
         /* Disable Transmission interrupts*/\
         UCSR##num##B &= ~(1 << UDRIE##num); \
     } else { \

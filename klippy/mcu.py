@@ -563,14 +563,23 @@ class MCU:
         wp = "mcu '%s': " % (self._name)
         self._serial = serialhdl.SerialReader(self._reactor, warn_prefix=wp)
         self._baud = 0
-        self._canbus_iface = None
+        bridge_mcu_name = config.get('bridge_mcu', None)
+        self._is_serial_bridged_mcu = False
         canbus_uuid = config.get('canbus_uuid', None)
+        self._canbus_iface = None
         if canbus_uuid is not None:
             self._serialport = canbus_uuid
             self._canbus_iface = config.get('canbus_interface', 'can0')
             cbid = self._printer.load_object(config, 'canbus_ids')
             cbid.add_uuid(config, canbus_uuid, self._canbus_iface)
             self._printer.load_object(config, 'canbus_stats %s' % (self._name,))
+        elif bridge_mcu_name is not None:
+            self._serialport = bridge_mcu_name
+            self._is_serial_bridged_mcu = True
+            self._bridge_mcu = printer.lookup_object('mcu', bridge_mcu_name)
+            self._serial_bridge_baud = config.getint('baud', 250000, minval=2400)
+            self._serial_bridge_usart_number = config.getint('usart_number', 0)
+            self._bridge_mcu.register_config_callback(self._build_serial_bridge_config)
         else:
             self._serialport = config.get('serial')
             if not (self._serialport.startswith("/dev/rpmsg_")
@@ -612,14 +621,39 @@ class MCU:
         self._mcu_tick_awake = 0.
         # Register handlers
         printer.load_object(config, "error_mcu")
-        printer.register_event_handler("klippy:firmware_restart",
-                                       self._firmware_restart)
-        printer.register_event_handler("klippy:mcu_identify",
-                                       self._mcu_identify)
-        printer.register_event_handler("klippy:connect", self._connect)
+
+        # Serial bridged MCU's handles mcu identify and connect events sent after other MCU's have been set up.
+        if self._is_serial_bridged_mcu:
+            printer.register_event_handler("klippy:mcu_identify_bridged", self._mcu_identify)
+            printer.register_event_handler("klippy:connect_bridged", self._mcu_identify)
+            printer.register_event_handler("klippy:bridged_firmware_restart",
+                                           self._bridged_firmware_restart)
+        else:
+            printer.register_event_handler("klippy:firmware_restart",
+                                           self._firmware_restart)
+            printer.register_event_handler("klippy:mcu_identify", self._mcu_identify)
+            printer.register_event_handler("klippy:connect", self._connect)
+
         printer.register_event_handler("klippy:shutdown", self._shutdown)
         printer.register_event_handler("klippy:disconnect", self._disconnect)
         printer.register_event_handler("klippy:ready", self._ready)
+
+    def _build_serial_bridge_config(self):
+        if not self._is_serial_bridged_mcu:
+            return
+        wp = "mcu '%s': " % (self._name)
+        logging.info("%sConfiguring serial bridge on %s", wp, self._bridge_mcu.get_name())
+        self._bridge_oid = self._bridge_mcu.create_oid()
+        clock = self._bridge_mcu.get_query_slot(self._bridge_oid)
+        rest_ticks = self._bridge_mcu.seconds_to_clock(0.005)
+        logging.info("%sConfiguring serial bridge on %s: clock=%d rest_ticks=%d", wp, self._bridge_mcu.get_name(), clock, rest_ticks)
+        usart = self._serial_bridge_usart_number
+        buad = self._serial_bridge_baud
+        self._bridge_mcu.add_config_cmd(
+            "command_config_serial_bridge oid=%d clock=%d rest_ticks=%d usart=%d baud=%d u2x=%d" %
+            (self._bridge_oid, clock, rest_ticks, usart, buad, 1))
+        self._serial_bridge_cmd_queue = self.alloc_command_queue()
+
     # Serial callbacks
     def _handle_mcu_stats(self, params):
         count = params['count']
@@ -787,7 +821,17 @@ class MCU:
                 # Try toggling usb power
                 self._check_restart("enable power")
             try:
-                if self._canbus_iface is not None:
+                if self._is_serial_bridged_mcu:
+                    # TODO: Is the following true?
+                    # The mcu_bridge must have an active connection before we reach this point.
+                    mcu_bridge = self._printer.lookup_object(self._serialport)
+                    if mcu_bridge is None:
+                        raise error("MCU '%s' bridge '%s' not found"
+                                    % (self._name, self._serialport))
+                    logging.info('Connecting with serial bridge: %s', self._serialport)
+                    self._serial.connect_serial_bridge(mcu_bridge, self._bridge_oid)
+                    logging.info('Connected to serial bridge: %s', self._serialport)
+                elif self._canbus_iface is not None:
                     cbid = self._printer.lookup_object('canbus_ids')
                     nodeid = cbid.get_nodeid(self._serialport)
                     self._serial.connect_canbus(self._serialport, nodeid,
@@ -964,6 +1008,10 @@ class MCU:
             self._restart_cheetah()
         else:
             self._restart_arduino()
+    def _bridged_firmware_restart(self):
+        if self._is_serial_bridged_mcu and self._serial.serialqueue is not None:
+            logging.info('Will try to restart bridged mcu')
+            self._serial.send("reset")
     def _firmware_restart_bridge(self):
         self._firmware_restart(True)
     # Move queue tracking

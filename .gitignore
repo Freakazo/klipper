@@ -3,4 +3,6 @@ out
 *.pyc
 .config
 .config.old
+.config_mmu3
 klippy/.version
+.idea
