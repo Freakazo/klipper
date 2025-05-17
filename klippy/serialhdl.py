@@ -487,21 +487,21 @@ class SerialBridgeDevice:
         self.master_thread.start()
 
     def _listener(self):
-        MAX_MSG_SIZE = 64 - 8
+        MAX_MSG_SIZE = msgproto.MESSAGE_PAYLOAD_MAX - 5 # Some extra space for the send command
         while 1:
-            with self.write_lock:
-                r, w, e, = select.select([self.master_fd], [], [], 0)
+            with self.read_lock:
+                r, w, e, = select.select([self.master_fd], [], [])
                 if not r:
                     continue
                 data = os.read(self.master_fd, MAX_MSG_SIZE)
                 if not data:
                     return
-                # logging.info('mmu3 _listener, %s', list(bytearray(data)))
+                logging.info('mmu3 _listener, %s', list(bytearray(data)))
                 self.send_cmd.send([self.oid, data])
 
     def _handle_serial_bridge_response(self, params):
         data = params['data']
-        # logging.info('_handle_serial_bridge_response, %s', list(bytearray(data)))
+        logging.info('_handle_serial_bridge_response, %s', list(bytearray(data)))
         with self.write_lock:
             os.write(self.master_fd, bytearray(data))
 

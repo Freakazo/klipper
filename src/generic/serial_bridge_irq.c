@@ -7,26 +7,33 @@
 #include "sched.h"
 #include "board/irq.h"  // irq_save/irq_restore
 #include "board/serial_bridge.h" //SERIAL_BRIDGE_CNT
-#include "command.h" // output / MESSAGE_SYNC
+#include "command.h" // output / MESSAGE_SYNC MESSAGE_PAYLOAD_MAX
 
 static uint8_t receive_bridge_buf[SERIAL_BRIDGE_CNT][SERIAL_BRIDGE_RX_BUFF_SIZE] = {0};
 static uint8_t receive_bridge_pos[SERIAL_BRIDGE_CNT] = {0};
+static uint8_t receive_bridge_read_pos[SERIAL_BRIDGE_CNT] = {0};
 
 static uint8_t transmit_bridge_buf [SERIAL_BRIDGE_CNT][SERIAL_BRIDGE_TX_BUFF_SIZE] = {0};
 static uint8_t transmit_bridge_pos[SERIAL_BRIDGE_CNT] = {0};
 static uint8_t transmit_bridge_max[SERIAL_BRIDGE_CNT] = {0};
 
 
-void inline serial_bridge_rx_byte(uint8_t data, const uint8_t buffer_offset) {
-    if (receive_bridge_pos[buffer_offset] >= SERIAL_BRIDGE_RX_BUFF_SIZE) {
-        // Serial overflow - ignore
+void serial_bridge_rx_byte(uint8_t data, const uint8_t buffer_offset) {
+    uint_fast8_t wpos = receive_bridge_pos[buffer_offset];
+    uint_fast8_t next_wpos = (wpos + 1) % SERIAL_BRIDGE_RX_BUFF_SIZE;
+    uint_fast8_t rpos = receive_bridge_read_pos[buffer_offset];
+
+    // Check if buffer is full (next write position would equal read position)
+    if (next_wpos == rpos) {
+        // Buffer full - ignore
         return;
     }
-    receive_bridge_buf[buffer_offset][receive_bridge_pos[buffer_offset]++] = data;
+
+    receive_bridge_buf[buffer_offset][wpos] = data;
+    receive_bridge_pos[buffer_offset] = next_wpos;
     if (data == MESSAGE_SYNC) {
         sched_wake_tasks();
     }
-//    output("rx %c %c", receive_bridge_pos[buffer_offset], data);
 }
 
 uint8_t serial_bridge_get_tx_byte(uint8_t *pdata, uint8_t buffer_offset) {
@@ -96,22 +103,40 @@ uint8_t serial_bridge_get_data(uint8_t *data, uint8_t usart_number) {
         return -1;
     }
     for (;;) {
-        uint_fast8_t rpos = readb(&receive_bridge_pos[buffer_offset]);
-        if (!rpos) {
+        uint_fast8_t wpos = readb(&receive_bridge_pos[buffer_offset]);
+        uint_fast8_t rpos = readb(&receive_bridge_read_pos[buffer_offset]);
+
+
+        // No new data to read
+        if (wpos == rpos) {
             return 0;
         }
+
         uint8_t *buf = receive_bridge_buf[buffer_offset];
-        memcpy(data, buf, rpos);
-        irqstatus_t flag = irq_save();
-        if (rpos != readb(&receive_bridge_pos[buffer_offset])) {
-            // Raced with irq handler - retry
-            output("Racist: %c", rpos);
-            irq_restore(flag);
-            continue;
+        uint_fast8_t data_size = 0;
+
+        // Handle ring buffer wraparound
+        if (wpos > rpos) {
+            // Simple case: read from rpos to wpos
+            data_size = wpos - rpos;
+            if (data_size > MESSAGE_PAYLOAD_MAX) {
+                data_size = MESSAGE_PAYLOAD_MAX;
+            }
+            memcpy(data, &buf[rpos], data_size);
+        } else {
+            // Wraparound case: read from rpos to end, then from start to wpos
+            data_size = SERIAL_BRIDGE_RX_BUFF_SIZE - rpos;
+            memcpy(data, &buf[rpos], data_size);
+            if (wpos > 0) {
+                uint8_t max_to_read = ((wpos) < (MESSAGE_PAYLOAD_MAX - data_size) ? (wpos) : (MESSAGE_PAYLOAD_MAX - data_size));
+                memcpy(data + data_size, buf, max_to_read);
+                data_size += max_to_read;
+            }
         }
-//      output("reset_ze_mem %c", rpos);
-        receive_bridge_pos[buffer_offset] = 0;
-        irq_restore(flag);
-        return rpos;
+
+        // Update read position with wraparound
+        rpos = (rpos + data_size) % SERIAL_BRIDGE_RX_BUFF_SIZE;
+        writeb(&receive_bridge_read_pos[buffer_offset], rpos);
+        return data_size;
     }
 }

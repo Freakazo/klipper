@@ -389,8 +389,15 @@ class MCU_digital_out:
         cmd_queue = self._mcu.alloc_command_queue()
         self._set_cmd = self._mcu.lookup_command(
             "queue_digital_out oid=%c clock=%u on_ticks=%u", cq=cmd_queue)
+        self._update_cmd = self._mcu.lookup_command(
+            "update_digital_out oid=%c value=%c", cq=cmd_queue)
+    def update_digital(self, value):
+        logging.info("Forcing digital_out %s ", value)
+        self._update_cmd.send([self._oid, (not not value) ^ self._invert])
     def set_digital(self, print_time, value):
         clock = self._mcu.print_time_to_clock(print_time)
+        logging.info("MCU_digital_out.set_digital: %s %s %s", clock, value,
+                     print_time)
         self._set_cmd.send([self._oid, clock, (not not value) ^ self._invert],
                            minclock=self._last_clock, reqclock=clock)
         self._last_clock = clock
@@ -625,7 +632,7 @@ class MCU:
         # Serial bridged MCU's handles mcu identify and connect events sent after other MCU's have been set up.
         if self._is_serial_bridged_mcu:
             printer.register_event_handler("klippy:mcu_identify_bridged", self._mcu_identify)
-            printer.register_event_handler("klippy:connect_bridged", self._mcu_identify)
+            printer.register_event_handler("klippy:connect_bridged", self._connect)
             printer.register_event_handler("klippy:bridged_firmware_restart",
                                            self._bridged_firmware_restart)
         else:
@@ -1012,6 +1019,7 @@ class MCU:
         if self._is_serial_bridged_mcu and self._serial.serialqueue is not None:
             logging.info('Will try to restart bridged mcu')
             self._serial.send("reset")
+            self._reactor.pause(self._reactor.monotonic() + 0.2)
     def _firmware_restart_bridge(self):
         self._firmware_restart(True)
     # Move queue tracking
@@ -1023,6 +1031,7 @@ class MCU:
         self._flush_callbacks.append(callback)
     def flush_moves(self, print_time, clear_history_time):
         if self._steppersync is None:
+            logging.info('%s - no _steppesync so no flushing',self._name )
             return
         clock = self.print_time_to_clock(print_time)
         if clock < 0:

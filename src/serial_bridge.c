@@ -68,9 +68,11 @@ DECL_COMMAND(command_serial_bridge_send, "serial_bridge_send oid=%c data=%*s");
 
 
 void serial_bridge_task(void) {
-    if (!sched_check_wake(&serial_bridge_wake))
+    if (!sched_check_wake(&serial_bridge_wake)) {
         return;
-    uint8_t buf[SERIAL_BRIDGE_RX_BUFF_SIZE];
+    }
+
+    uint8_t buf[MESSAGE_MAX];
     uint8_t oid;
     struct serial_bridge *sb;
 
