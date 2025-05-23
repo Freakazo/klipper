@@ -33,7 +33,19 @@ class MCU_stepper:
         self._mcu.register_config_callback(self._build_config)
         self._step_pin = step_pin_params['pin']
         self._invert_step = step_pin_params['invert']
-        if dir_pin_params['chip'] is not self._mcu:
+        self._step_pin_sreg_oid = 0
+        if hasattr(step_pin_params['chip'], 'is_sreg'):
+            self._step_pin_sreg_oid = step_pin_params['chip'].get_oid()
+            if step_pin_params['chip'].get_mcu() is not self._mcu:
+                raise self._mcu.get_printer().config_error(
+                    "Stepper step pin must be on same mcu as dir pin")
+        self._dir_pin_sreg_oid = 0
+        if hasattr(dir_pin_params['chip'], 'is_sreg'):
+            self._dir_pin_sreg_oid = dir_pin_params['chip'].get_oid()
+            if dir_pin_params['chip'].get_mcu() is not self._mcu:
+                raise self._mcu.get_printer().config_error(
+                    "Stepper step pin must be on same mcu as dir pin")
+        elif dir_pin_params['chip'] is not self._mcu:
             raise self._mcu.get_printer().config_error(
                 "Stepper dir pin must be on same mcu as step pin")
         self._dir_pin = dir_pin_params['pin']
@@ -106,8 +118,8 @@ class MCU_stepper:
         step_pulse_ticks = self._mcu.seconds_to_clock(self._step_pulse_duration)
         self._mcu.add_config_cmd(
             "config_stepper oid=%d step_pin=%s dir_pin=%s invert_step=%d"
-            " step_pulse_ticks=%u" % (self._oid, self._step_pin, self._dir_pin,
-                                      invert_step, step_pulse_ticks))
+            " step_pulse_ticks=%u step_sr_oid=%d dir_sr_oid=%d" % (self._oid, self._step_pin, self._dir_pin,
+                                      invert_step, step_pulse_ticks, self._step_pin_sreg_oid, self._dir_pin_sreg_oid))
         self._mcu.add_config_cmd("reset_step_clock oid=%d clock=0"
                                  % (self._oid,), on_restart=True)
         step_cmd_tag = self._mcu.lookup_command(

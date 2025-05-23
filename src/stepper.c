@@ -13,6 +13,7 @@
 #include "sched.h" // struct timer
 #include "stepper.h" // stepper_event
 #include "trsync.h" // trsync_add_signal
+#include "gpio_sr.h" // gpio_out_sr_setup
 
 DECL_CONSTANT("STEPPER_STEP_BOTH_EDGE", 1);
 
@@ -46,7 +47,7 @@ struct stepper {
     int16_t add;
     uint32_t count;
     uint32_t next_step_time, step_pulse_ticks;
-    struct gpio_out step_pin, dir_pin;
+    struct gpio_out_extended step_pin, dir_pin;
     uint32_t position;
     struct move_queue_head mq;
     struct trsync_signal stop_signal;
@@ -91,7 +92,7 @@ stepper_load_next(struct stepper *s)
     // Add all steps to s->position (stepper_get_position() can calc mid-move)
     if (m->flags & MF_DIR) {
         s->position = -s->position + m->count;
-        gpio_out_toggle_noirq(s->dir_pin);
+        gpio_out_sr_toggle_noirq(s->dir_pin);
     } else {
         s->position += m->count;
     }
@@ -111,7 +112,7 @@ static uint_fast8_t
 stepper_event_edge(struct timer *t)
 {
     struct stepper *s = container_of(t, struct stepper, time);
-    gpio_out_toggle_noirq(s->step_pin);
+    gpio_out_sr_toggle_noirq(s->step_pin);
     uint32_t count = s->count - 1;
     if (likely(count)) {
         s->count = count;
@@ -132,18 +133,18 @@ static uint_fast8_t
 stepper_event_avr(struct timer *t)
 {
     struct stepper *s = container_of(t, struct stepper, time);
-    gpio_out_toggle_noirq(s->step_pin);
+    gpio_out_sr_toggle_noirq(s->step_pin);
     uint16_t *pcount = (void*)&s->count, count = *pcount - 1;
     if (likely(count)) {
         *pcount = count;
         s->time.waketime += s->interval;
-        gpio_out_toggle_noirq(s->step_pin);
+        gpio_out_sr_toggle_noirq(s->step_pin);
         if (s->flags & SF_HAVE_ADD)
             s->interval += s->add;
         return SF_RESCHEDULE;
     }
     uint_fast8_t ret = stepper_load_next(s);
-    gpio_out_toggle_noirq(s->step_pin);
+    gpio_out_sr_toggle_noirq(s->step_pin);
     return ret;
 }
 
@@ -152,7 +153,7 @@ static uint_fast8_t
 stepper_event_full(struct timer *t)
 {
     struct stepper *s = container_of(t, struct stepper, time);
-    gpio_out_toggle_noirq(s->step_pin);
+    gpio_out_sr_toggle_noirq(s->step_pin);
     uint32_t curtime = timer_read_time();
     uint32_t min_next_time = curtime + s->step_pulse_ticks;
     s->count--;
@@ -200,8 +201,8 @@ command_config_stepper(uint32_t *args)
         s->flags = SF_INVERT_STEP;
     else if (invert_step < 0)
         s->flags = SF_SINGLE_SCHED;
-    s->step_pin = gpio_out_setup(args[1], s->flags & SF_INVERT_STEP);
-    s->dir_pin = gpio_out_setup(args[2], 0);
+    s->step_pin = gpio_out_sr_setup(args[1], s->flags & SF_INVERT_STEP, args[5]);
+    s->dir_pin = gpio_out_sr_setup(args[2], 0, args[6]);
     s->position = -POSITION_BIAS;
     s->step_pulse_ticks = args[4];
     move_queue_setup(&s->mq, sizeof(struct stepper_move));
@@ -220,7 +221,8 @@ command_config_stepper(uint32_t *args)
     }
 }
 DECL_COMMAND(command_config_stepper, "config_stepper oid=%c step_pin=%c"
-             " dir_pin=%c invert_step=%c step_pulse_ticks=%u");
+             " dir_pin=%c invert_step=%c step_pulse_ticks=%u"
+             " step_sr_oid=%c dir_sr_oid=%c");
 
 // Return the 'struct stepper' for a given stepper oid
 static struct stepper *
@@ -331,11 +333,11 @@ stepper_stop(struct trsync_signal *tss, uint8_t reason)
     s->count = 0;
     s->flags = ((s->flags & (SF_INVERT_STEP|SF_SINGLE_SCHED|SF_OPTIMIZED_PATH))
                 | SF_NEED_RESET);
-    gpio_out_write(s->dir_pin, 0);
+    gpio_out_sr_write(s->dir_pin, 0);
     if (!(s->flags & SF_SINGLE_SCHED)
         || (HAVE_AVR_OPTIMIZATION && s->flags & SF_OPTIMIZED_PATH))
         // Must return step pin to "unstep" state
-        gpio_out_write(s->step_pin, s->flags & SF_INVERT_STEP);
+        gpio_out_sr_write(s->step_pin, s->flags & SF_INVERT_STEP);
     while (!move_queue_empty(&s->mq)) {
         struct move_node *mn = move_queue_pop(&s->mq);
         struct stepper_move *m = container_of(mn, struct stepper_move, node);
