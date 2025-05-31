@@ -29,14 +29,14 @@ class SoftwareI2C:
             raise ppins.error("%s: scl_pin and sda_pin must be on same mcu" % (
                 config.get_name(),))
         self.mcu.add_config_cmd("config_digital_out oid=%d pin=%s"
-                                " value=%d default_value=%d max_duration=%d" % (
-                                    self.sda_oid, sda_params['pin'], 1, 1, 0))
+                                " value=%d default_value=%d max_duration=%d shift_register_oid=%d" % (
+                                    self.sda_oid, sda_params['pin'], 1, 1, 0, 0))
     def get_mcu(self):
         return self.mcu
     def build_config(self):
         self.mcu.add_config_cmd("config_digital_out oid=%d pin=%s value=%d"
-                                " default_value=%d max_duration=%d" % (
-                                    self.scl_oid, self.scl_pin, 1, 1, 0))
+                                " default_value=%d max_duration=%d shift_register_oid=%d" % (
+                                    self.scl_oid, self.scl_pin, 1, 1, 0, 0))
         self.update_pin_cmd = self.mcu.lookup_command(
             "update_digital_out oid=%c value=%c", cq=self.cmd_queue)
     def i2c_write(self, msg, minclock=0, reqclock=0):

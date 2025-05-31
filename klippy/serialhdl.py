@@ -7,6 +7,7 @@ import logging, threading, os
 import pty
 import select
 import termios
+import time
 import tty
 
 import serial
@@ -97,7 +98,7 @@ class SerialReader:
         logging.info('%sStarting serial session with %s', self.warn_prefix, serial_fd_type)
         # Obtain and load the data dictionary from the firmware
         completion = self.reactor.register_callback(self._get_identify_data)
-        identify_data = completion.wait(self.reactor.monotonic() + 50.)
+        identify_data = completion.wait(self.reactor.monotonic() + 5.)
         if identify_data is None:
             logging.info("%sTimeout on connect", self.warn_prefix)
             logging.info("%s Dump Debug:\n%s", self.warn_prefix, self.dump_debug())
@@ -487,7 +488,7 @@ class SerialBridgeDevice:
         self.master_thread.start()
 
     def _listener(self):
-        MAX_MSG_SIZE = msgproto.MESSAGE_PAYLOAD_MAX - 5 # Some extra space for the send command
+        MAX_MSG_SIZE = 5 # msgproto.MESSAGE_PAYLOAD_MAX - 10 # Some extra space for the send command
         while 1:
             with self.read_lock:
                 r, w, e, = select.select([self.master_fd], [], [])
@@ -496,14 +497,18 @@ class SerialBridgeDevice:
                 data = os.read(self.master_fd, MAX_MSG_SIZE)
                 if not data:
                     return
-                logging.info('mmu3 _listener, %s', list(bytearray(data)))
-                self.send_cmd.send([self.oid, data])
+                mask = 0b10101010
+                masked = bytearray(b ^ mask for b in data)
+                logging.info('%s, mcu -> mmu3, %s', round(time.time() * 1000), list(bytearray(data)))
+                self.send_cmd.send([self.oid, masked])
 
     def _handle_serial_bridge_response(self, params):
         data = params['data']
-        logging.info('_handle_serial_bridge_response, %s', list(bytearray(data)))
+        mask = 0b10101010
+        un_masked = bytearray(b ^ mask for b in data)
+        logging.info('_handle_serial_bridge_response, %s', list(bytearray(un_masked)))
         with self.write_lock:
-            os.write(self.master_fd, bytearray(data))
+            os.write(self.master_fd, un_masked)
 
     def fileno(self):
         # Return the file descriptor for serialqueue to read from

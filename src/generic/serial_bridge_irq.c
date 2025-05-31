@@ -17,6 +17,7 @@ static uint8_t transmit_bridge_buf [SERIAL_BRIDGE_CNT][SERIAL_BRIDGE_TX_BUFF_SIZ
 static uint8_t transmit_bridge_pos[SERIAL_BRIDGE_CNT] = {0};
 static uint8_t transmit_bridge_max[SERIAL_BRIDGE_CNT] = {0};
 
+const uint8_t mask = 0b10101010;
 
 void serial_bridge_rx_byte(uint8_t data, const uint8_t buffer_offset) {
     uint_fast8_t wpos = receive_bridge_pos[buffer_offset];
@@ -29,11 +30,9 @@ void serial_bridge_rx_byte(uint8_t data, const uint8_t buffer_offset) {
         return;
     }
 
-    receive_bridge_buf[buffer_offset][wpos] = data;
+    receive_bridge_buf[buffer_offset][wpos] = data ^ mask;
     receive_bridge_pos[buffer_offset] = next_wpos;
-    if (data == MESSAGE_SYNC) {
-        sched_wake_tasks();
-    }
+    sched_wake_tasks();
 }
 
 uint8_t serial_bridge_get_tx_byte(uint8_t *pdata, uint8_t buffer_offset) {
@@ -41,7 +40,8 @@ uint8_t serial_bridge_get_tx_byte(uint8_t *pdata, uint8_t buffer_offset) {
 //        output("No data to tx");
         return 1;
     }
-    *pdata = transmit_bridge_buf[buffer_offset][transmit_bridge_pos[buffer_offset]++];
+    uint8_t data = transmit_bridge_buf[buffer_offset][transmit_bridge_pos[buffer_offset]++];
+    *pdata = data ^ mask;
     return 0;
 }
 

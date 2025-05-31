@@ -90,10 +90,8 @@ void serial_bridge_enable_tx_irq(const uint8_t usart_number) {
     uint8_t was_enabled = *(cfg->ucsrb) & (1 << cfg->udrie_bit);
     uint8_t tx_enabled = *(cfg->ucsrb) & (1 << cfg->txen_bit);
     if(was_enabled > 0 && tx_enabled > 0) {
-       output("Was enabled, just gonna leave it. USART: %c", usart_number);
-       return;
+        return;
     }
-//    output("Enabling TX interrupt for USART: %c", usart_number);
     *(cfg->ucsrb) |= (1 << cfg->udrie_bit) | (1 << cfg->txen_bit);
 }
 

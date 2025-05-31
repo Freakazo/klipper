@@ -3,7 +3,9 @@
 # Copyright (C) 2016-2025  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import sys, os, zlib, logging, math
+import os, zlib, logging, math
+import time
+
 import serialhdl, msgproto, pins, chelper, clocksync
 
 class error(Exception):
@@ -381,8 +383,8 @@ class MCU_digital_out:
         self._oid = self._mcu.create_oid()
         self._mcu.add_config_cmd(
             "config_digital_out oid=%d pin=%s value=%d default_value=%d"
-            " max_duration=%d" % (self._oid, self._pin, self._start_value,
-                                  self._shutdown_value, mdur_ticks))
+            " max_duration=%d shift_register_oid=%d" % (self._oid, self._pin, self._start_value,
+                                  self._shutdown_value, mdur_ticks, 0))
         self._mcu.add_config_cmd("update_digital_out oid=%d value=%d"
                                  % (self._oid, self._start_value),
                                  on_restart=True)
@@ -392,12 +394,9 @@ class MCU_digital_out:
         self._update_cmd = self._mcu.lookup_command(
             "update_digital_out oid=%c value=%c", cq=cmd_queue)
     def update_digital(self, value):
-        logging.info("Forcing digital_out %s ", value)
         self._update_cmd.send([self._oid, (not not value) ^ self._invert])
     def set_digital(self, print_time, value):
         clock = self._mcu.print_time_to_clock(print_time)
-        logging.info("MCU_digital_out.set_digital: %s %s %s", clock, value,
-                     print_time)
         self._set_cmd.send([self._oid, clock, (not not value) ^ self._invert],
                            minclock=self._last_clock, reqclock=clock)
         self._last_clock = clock
@@ -467,9 +466,9 @@ class MCU_pwm:
         self._oid = self._mcu.create_oid()
         self._mcu.add_config_cmd(
             "config_digital_out oid=%d pin=%s value=%d"
-            " default_value=%d max_duration=%d"
+            " default_value=%d max_duration=%d shift_register_oid=%d"
             % (self._oid, self._pin, self._start_value >= 1.0,
-               self._shutdown_value >= 0.5, mdur_ticks))
+               self._shutdown_value >= 0.5, mdur_ticks, 0))
         self._mcu.add_config_cmd(
             "set_digital_out_pwm_cycle oid=%d cycle_ticks=%d"
             % (self._oid, cycle_ticks))
@@ -627,12 +626,16 @@ class MCU:
         self._mcu_tick_stddev = 0.
         self._mcu_tick_awake = 0.
         # Register handlers
+        self._post_event_handlers = {
+            'klippy:connect': [],
+            'klippy:mcu_identify': []
+        }
         printer.load_object(config, "error_mcu")
 
         # Serial bridged MCU's handles mcu identify and connect events sent after other MCU's have been set up.
         if self._is_serial_bridged_mcu:
-            printer.register_event_handler("klippy:mcu_identify_bridged", self._mcu_identify)
-            printer.register_event_handler("klippy:connect_bridged", self._connect)
+            self._bridge_mcu.register_post_handler("klippy:connect", self._mcu_identify)
+            self._bridge_mcu.register_post_handler("klippy:connect", self._connect)
             printer.register_event_handler("klippy:bridged_firmware_restart",
                                            self._bridged_firmware_restart)
         else:
@@ -645,6 +648,11 @@ class MCU:
         printer.register_event_handler("klippy:disconnect", self._disconnect)
         printer.register_event_handler("klippy:ready", self._ready)
 
+    def register_post_handler(self, event, handler):
+        if event not in self._post_event_handlers:
+            raise error("MCU does not support post event handler: '%s'" % (event,))
+        self._post_event_handlers[event].append(handler)
+
     def _build_serial_bridge_config(self):
         if not self._is_serial_bridged_mcu:
             return
@@ -652,7 +660,7 @@ class MCU:
         logging.info("%sConfiguring serial bridge on %s", wp, self._bridge_mcu.get_name())
         self._bridge_oid = self._bridge_mcu.create_oid()
         clock = self._bridge_mcu.get_query_slot(self._bridge_oid)
-        rest_ticks = self._bridge_mcu.seconds_to_clock(0.005)
+        rest_ticks = self._bridge_mcu.seconds_to_clock(0.001)
         logging.info("%sConfiguring serial bridge on %s: clock=%d rest_ticks=%d", wp, self._bridge_mcu.get_name(), clock, rest_ticks)
         usart = self._serial_bridge_usart_number
         buad = self._serial_bridge_baud
@@ -819,6 +827,9 @@ class MCU:
         logging.info(move_msg)
         log_info = self._log_info() + "\n" + move_msg
         self._printer.set_rollover_info(self._name, log_info, log=False)
+        for cb in self._post_event_handlers['klippy:connect']:
+            cb()
+
     def _mcu_identify(self):
         if self.is_fileoutput():
             self._connect_file()
@@ -881,6 +892,8 @@ class MCU:
         self.register_response(self._handle_shutdown, 'shutdown')
         self.register_response(self._handle_shutdown, 'is_shutdown')
         self.register_response(self._handle_mcu_stats, 'stats')
+        for cb in self._post_event_handlers['klippy:mcu_identify']:
+            cb()
     def _ready(self):
         if self.is_fileoutput():
             return
@@ -954,6 +967,8 @@ class MCU:
         return self._serial.get_msgparser().get_constants()
     def get_constant_float(self, name):
         return self._serial.get_msgparser().get_constant_float(name)
+    def add_enumerations(self, enumerations):
+        self._serial.get_msgparser().fill_enumerations(enumerations)
     def print_time_to_clock(self, print_time):
         return self._clocksync.print_time_to_clock(print_time)
     def clock_to_print_time(self, clock):
@@ -1017,9 +1032,8 @@ class MCU:
             self._restart_arduino()
     def _bridged_firmware_restart(self):
         if self._is_serial_bridged_mcu and self._serial.serialqueue is not None:
-            logging.info('Will try to restart bridged mcu')
-            self._serial.send("reset")
-            self._reactor.pause(self._reactor.monotonic() + 0.2)
+            self._restart_via_command()
+            time.sleep(1) # Add some time before restarting main MCUs
     def _firmware_restart_bridge(self):
         self._firmware_restart(True)
     # Move queue tracking
@@ -1031,7 +1045,6 @@ class MCU:
         self._flush_callbacks.append(callback)
     def flush_moves(self, print_time, clear_history_time):
         if self._steppersync is None:
-            logging.info('%s - no _steppesync so no flushing',self._name )
             return
         clock = self.print_time_to_clock(print_time)
         if clock < 0:
@@ -1076,6 +1089,8 @@ class MCU:
         last_stats = {k:(float(v) if '.' in v else int(v)) for k, v in parts}
         self._get_status_info['last_stats'] = last_stats
         return False, '%s: %s' % (self._name, stats)
+    def is_bridged_mcu(self):
+        return self._is_serial_bridged_mcu
 
 def add_printer_objects(config):
     printer = config.get_printer()

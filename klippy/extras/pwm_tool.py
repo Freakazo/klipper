@@ -86,9 +86,9 @@ class MCU_queued_pwm:
             raise config_error("shutdown value must be 0.0 or 1.0 on soft pwm")
         self._mcu.add_config_cmd(
             "config_digital_out oid=%d pin=%s value=%d"
-            " default_value=%d max_duration=%d"
+            " default_value=%d max_duration=%d shift_register_oid=%d"
             % (self._oid, self._pin, self._start_value >= 1.0,
-               self._shutdown_value >= 0.5, self._duration_ticks))
+               self._shutdown_value >= 0.5, self._duration_ticks, 0))
         self._default_value = int(self._shutdown_value >= 0.5) * cycle_ticks
         self._mcu.add_config_cmd(
             "set_digital_out_pwm_cycle oid=%d cycle_ticks=%d"

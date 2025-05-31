@@ -14,10 +14,22 @@
 #include "sched.h" // sched_wake_tasks
 #include "serial_irq.h" // serial_enable_tx_irq
 
+#if CONFIG_SERIAL_BRIDGE
+#define RX_BUFFER_SIZE 250
+#else
 #define RX_BUFFER_SIZE 192
+#endif
 
-static uint8_t receive_buf[RX_BUFFER_SIZE], receive_pos;
-static uint8_t transmit_buf[512], transmit_pos, transmit_max; // TODO: Ayo so much bigger maybe no good.
+#if CONFIG_SERIAL_BRIDGE
+#define TX_BUFFER_SIZE 250
+#else
+#define TX_BUFFER_SIZE 96
+#endif
+
+static uint8_t receive_buf[RX_BUFFER_SIZE] = {0};
+static uint8_t transmit_buf[TX_BUFFER_SIZE] = {0};
+
+static uint8_t receive_pos = 0, transmit_pos = 0, transmit_max = 0;
 
 DECL_CONSTANT("SERIAL_BAUD", CONFIG_SERIAL_BAUD);
 DECL_CONSTANT("RECEIVE_WINDOW", RX_BUFFER_SIZE);

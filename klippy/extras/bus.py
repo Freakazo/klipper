@@ -123,7 +123,7 @@ def MCU_SPI_from_config(config, mode, pin_option="cs_pin",
     # Determine pin from config
     ppins = config.get_printer().lookup_object("pins")
     cs_pin = config.get(pin_option)
-    cs_pin_params = ppins.lookup_pin(cs_pin, share_type=share_type)
+    cs_pin_params = ppins.lookup_pin(cs_pin, share_type=share_type, can_invert=True)
     pin = cs_pin_params['pin']
     if pin == 'None':
         ppins.reset_pin_sharing(cs_pin_params)
@@ -260,8 +260,8 @@ class MCU_bus_digital_out:
             raise ppins.error("Pin %s must be on mcu %s" % (
                 pin_desc, mcu.get_name()))
         mcu.add_config_cmd("config_digital_out oid=%d pin=%s value=%d"
-                           " default_value=%d max_duration=%d"
-                           % (self.oid, pin_params['pin'], value, value, 0))
+                           " default_value=%d max_duration=%d shift_register_oid=%d"
+                           % (self.oid, pin_params['pin'], value, value, 0, 0))
         mcu.register_config_callback(self.build_config)
         if cmd_queue is None:
             cmd_queue = mcu.alloc_command_queue()
